@@ -1,0 +1,142 @@
+version: '3.8'
+
+services:
+  # Streamlit Dashboard Application
+  dashboard:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: onence-dashboard
+    ports:
+      - "8501:8501"
+    environment:
+      - DATABASE_URL=postgresql://onence_user:onence_password@db:5432/onence_db
+      - REDIS_URL=redis://redis:6379/0
+      - ONENCE_USERNAME=${ONENCE_USERNAME}
+      - ONENCE_PASSWORD=${ONENCE_PASSWORD}
+      - ENVIRONMENT=development
+      - LOG_LEVEL=INFO
+    volumes:
+      - ./src:/app/src
+      - ./uploads:/app/uploads
+      - ./logs:/app/logs
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+    networks:
+      - onence-network
+
+  # PostgreSQL with TimescaleDB
+  db:
+    image: timescale/timescaledb:latest-pg15
+    container_name: onence-postgres
+    environment:
+      - POSTGRES_USER=onence_user
+      - POSTGRES_PASSWORD=onence_password
+      - POSTGRES_DB=onence_db
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./scripts/init_db.sql:/docker-entrypoint-initdb.d/init_db.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U onence_user -d onence_db"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+    networks:
+      - onence-network
+
+  # Redis for caching and task queue
+  redis:
+    image: redis:7-alpine
+    container_name: onence-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    restart: unless-stopped
+    networks:
+      - onence-network
+
+  # Background Worker for data collection
+  worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: onence-worker
+    command: python scripts/worker.py
+    environment:
+      - DATABASE_URL=postgresql://onence_user:onence_password@db:5432/onence_db
+      - REDIS_URL=redis://redis:6379/0
+      - ONENCE_USERNAME=${ONENCE_USERNAME}
+      - ONENCE_PASSWORD=${ONENCE_PASSWORD}
+      - ENVIRONMENT=development
+      - LOG_LEVEL=INFO
+    volumes:
+      - ./src:/app/src
+      - ./logs:/app/logs
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+    networks:
+      - onence-network
+
+  # Optional: Grafana for advanced visualization
+  grafana:
+    image: grafana/grafana:latest
+    container_name: onence-grafana
+    ports:
+      - "3000:3000"
+    environment:
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+      - GF_INSTALL_PLUGINS=
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./grafana/dashboards:/etc/grafana/provisioning/dashboards
+      - ./grafana/datasources:/etc/grafana/provisioning/datasources
+    depends_on:
+      - db
+    restart: unless-stopped
+    networks:
+      - onence-network
+
+  # Optional: pgAdmin for database management
+  pgadmin:
+    image: dpage/pgadmin4:latest
+    container_name: onence-pgadmin
+    ports:
+      - "5050:80"
+    environment:
+      - PGADMIN_DEFAULT_EMAIL=admin@onence.local
+      - PGADMIN_DEFAULT_PASSWORD=admin
+    volumes:
+      - pgadmin_data:/var/lib/pgadmin
+    depends_on:
+      - db
+    restart: unless-stopped
+    networks:
+      - onence-network
+
+networks:
+  onence-network:
+    driver: bridge
+
+volumes:
+  postgres_data:
+  redis_data:
+  grafana_data:
+  pgadmin_data:
